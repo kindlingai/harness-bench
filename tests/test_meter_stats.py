@@ -106,6 +106,23 @@ def test_a_burst_is_not_streamed():
     assert m.summary()["streamed_turns"] == 0
 
 
+def test_a_class_sent_in_one_burst_has_no_rate():
+    """Reasoning streams in many pieces; the code write then lands in one flush."""
+    clock = Clock()
+    m = Meter(clock=clock)
+    t = m.begin()
+    for i in range(10):
+        clock.t = 1.0 + 0.1 * i
+        m.reasoning(t, "r" * 80)
+    clock.t = 2.5
+    args = json.dumps({"path": "a.py", "content": "x" * 300})
+    m.tool_args(t, 0, args)
+    m.tool_call(t, 0, "write_file", args)
+    m.end(t, {"prompt_tokens": 10, "completion_tokens": 150})
+    by = m.summary()["by_class"]
+    assert by["reasoning"]["decode_tok_s"] and by["code"]["decode_tok_s"] is None and by["code"]["tokens"] > 0
+
+
 def test_output_rate_needs_no_streaming():
     clock = Clock()
     m = Meter(clock=clock)

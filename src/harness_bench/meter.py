@@ -101,6 +101,8 @@ class Turn:
     agent: str = "lead"  # "lead", or "sub<N>" for the Nth subagent
     flushes: int = 0  # separate arrivals; few flushes means coarse per-class timing
     max_flush_share: float = 1.0  # the largest flush's share of the output; near 1 means it came in one burst
+    # The same per class: a class that arrived in one burst inside an otherwise streamed turn has no rate.
+    class_max_share: dict[str, float] = field(default_factory=dict)
     chars: dict[str, float] = field(default_factory=_empty)  # every streamed character, by class
     timed_chars: dict[str, float] = field(default_factory=_empty)  # characters after the first piece
     seconds: dict[str, float] = field(default_factory=_empty)  # decode time charged to each class
@@ -183,6 +185,10 @@ class Meter:
         t.flushes = len(flushes)
         sizes = [sum(sum(split.values()) for _, split in f) for f in flushes]
         t.max_flush_share = max(sizes) / sum(sizes) if sizes and sum(sizes) else 1.0
+        for cls in CLASSES:
+            per = [sum(split.get(cls, 0) for _, split in f) for f in flushes]
+            if sum(per):
+                t.class_max_share[cls] = max(per) / sum(per)
         for before, flush in itertools.pairwise(flushes):
             dt = flush[0][0] - before[-1][0]
             n = sum(sum(split.values()) for _, split in flush)
@@ -256,16 +262,18 @@ def summarize_turns(turns: list[dict]) -> dict:
         "decode_tok_s": _rate(
             sum(max(t["completion_tokens"] - 1, 0) for t in streamed), sum(t["decode_s"] for t in streamed)
         ),
-        "by_class": {
-            cls: {
-                "tokens": round(sum(t["chars"][cls] * tpc(t) for t in done)),
-                "seconds": round(sum(t["seconds"][cls] for t in streamed), 3),
-                "decode_tok_s": _rate(
-                    sum(t["timed_chars"][cls] * tpc(t) for t in streamed), sum(t["seconds"][cls] for t in streamed)
-                ),
-            }
-            for cls in CLASSES
-        },
+        "by_class": {cls: _class_rate(cls, done, streamed, tpc) for cls in CLASSES},
+    }
+
+
+def _class_rate(cls: str, done: list[dict], streamed: list[dict], tpc) -> dict:
+    """A class's rate over streamed turns in which the class itself arrived spread out, not in one burst."""
+    ok = [t for t in streamed if t.get("class_max_share", {}).get(cls, 1.0) <= MAX_FLUSH_SHARE]
+    return {
+        "tokens": round(sum(t["chars"][cls] * tpc(t) for t in done)),
+        "measured_turns": len(ok),
+        "seconds": round(sum(t["seconds"][cls] for t in ok), 3),
+        "decode_tok_s": _rate(sum(t["timed_chars"][cls] * tpc(t) for t in ok), sum(t["seconds"][cls] for t in ok)),
     }
 
 
