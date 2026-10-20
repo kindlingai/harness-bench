@@ -71,7 +71,7 @@ def _run_all(names, tasks, seeds, harness, args, keep, results, out) -> None:
             t = r.throughput
             print(
                 f"{name:20s} seed {seed:3d}  {'PASS' if r.passed else 'fail'}  score {r.score:.2f}  "
-                f"turns {t['turns']:2d}  decode {t['decode_tok_s'] or 0:7.1f} tok/s  stop {r.stop}",
+                f"turns {t['turns']:2d}  output {t['output_tok_s'] or 0:7.1f} tok/s  stop {r.stop}",
                 file=sys.stderr,
                 flush=True,
             )

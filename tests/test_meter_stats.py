@@ -53,9 +53,8 @@ def test_buffered_tool_call_is_charged_its_generation_time():
     m.tool_args(t, 0, json.dumps({"path": "logs"}))
     m.tool_call(t, 0, "list_files", json.dumps({"path": "logs"}))
     m.end(t, {"prompt_tokens": 100, "completion_tokens": 10})
-    tool = m.summary()["by_class"]["tool"]
-    assert math.isclose(tool["seconds"], 3.0)
-    assert tool["decode_tok_s"] < 5
+    assert math.isclose(t.seconds["tool"], 3.0)
+    assert m.summary()["decode_tok_s"] is None  # two arrivals: too coarse to time, so not counted
 
 
 def test_call_start_marker_does_not_swallow_the_gap():
@@ -73,7 +72,7 @@ def test_call_start_marker_does_not_swallow_the_gap():
         m.tool_args(t, 0, args[i : i + 10])
     m.tool_call(t, 0, "write_file", args)
     m.end(t, {"prompt_tokens": 10, "completion_tokens": 40})
-    assert math.isclose(m.summary()["by_class"]["code"]["seconds"], 2.0, rel_tol=0.01)
+    assert math.isclose(t.seconds["code"], 2.0, rel_tol=0.01)
 
 
 def test_one_flush_splits_its_time_by_characters():
@@ -89,10 +88,33 @@ def test_one_flush_splits_its_time_by_characters():
     m.tool_args(t, 0, args)
     m.tool_call(t, 0, "write_file", args)
     m.end(t, {"prompt_tokens": 10, "completion_tokens": 100})
-    by = m.summary()["by_class"]
     assert t.flushes == 2
-    assert math.isclose(by["reasoning"]["seconds"], 2.0 * 100 / (100 + len(args)), abs_tol=1e-3)
-    assert math.isclose(by["reasoning"]["seconds"] + by["code"]["seconds"], 2.0, abs_tol=1e-3)
+    assert math.isclose(t.seconds["reasoning"], 2.0 * 100 / (100 + len(args)))
+    assert math.isclose(t.seconds["reasoning"] + t.seconds["code"], 2.0)
+
+
+def test_a_burst_is_not_streamed():
+    """Three arrivals, but the last carries nearly everything."""
+    clock = Clock()
+    m = Meter(clock=clock)
+    t = m.begin()
+    for at, text in ((1.0, "a"), (1.5, "b"), (5.0, "c" * 500)):
+        clock.t = at
+        m.content(t, text)
+    m.end(t, {"prompt_tokens": 10, "completion_tokens": 120})
+    assert t.flushes == 3 and t.max_flush_share > 0.9
+    assert m.summary()["streamed_turns"] == 0
+
+
+def test_output_rate_needs_no_streaming():
+    clock = Clock()
+    m = Meter(clock=clock)
+    t = m.begin()
+    clock.t = 4.0
+    m.content(t, "all at once")
+    m.end(t, {"prompt_tokens": 10, "completion_tokens": 200})
+    s = m.summary()
+    assert s["output_tok_s"] == 50.0 and s["streamed_turns"] == 0 and s["decode_tok_s"] is None
 
 
 def test_markdown_write_is_prose_and_fences_are_code():

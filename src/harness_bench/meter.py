@@ -52,6 +52,10 @@ CODE_SUFFIXES = {
 # Pieces that arrive within this many seconds of the previous one were sent together (one flush). Servers and
 # routers batch output, so time is charged per flush and split across its characters.
 FLUSH_S = 0.005
+# A turn is "streamed", and its decode time measurable, when it arrived in at least MIN_FLUSHES flushes and no single
+# flush held more than MAX_FLUSH_SHARE of its output.
+MIN_FLUSHES = 3
+MAX_FLUSH_SHARE = 0.5
 FENCE = re.compile(r"```[^\n]*\n(.*?)(?:```|$)", re.DOTALL)
 
 
@@ -95,6 +99,7 @@ class Turn:
     estimated: bool = False  # True when the server sent no usage and tokens are chars / 4
     provider: str = ""  # the upstream that served it, when a router reports one
     flushes: int = 0  # separate arrivals; few flushes means coarse per-class timing
+    max_flush_share: float = 1.0  # the largest flush's share of the output; near 1 means it came in one burst
     chars: dict[str, float] = field(default_factory=_empty)  # every streamed character, by class
     timed_chars: dict[str, float] = field(default_factory=_empty)  # characters after the first piece
     seconds: dict[str, float] = field(default_factory=_empty)  # decode time charged to each class
@@ -175,6 +180,8 @@ class Meter:
             else:
                 flushes.append([(p.at, split)])
         t.flushes = len(flushes)
+        sizes = [sum(sum(split.values()) for _, split in f) for f in flushes]
+        t.max_flush_share = max(sizes) / sum(sizes) if sizes and sum(sizes) else 1.0
         for before, flush in itertools.pairwise(flushes):
             dt = flush[0][0] - before[-1][0]
             n = sum(sum(split.values()) for _, split in flush)
@@ -202,29 +209,7 @@ class Meter:
         return {"code": in_code, "prose": p.n - in_code}
 
     def summary(self) -> dict:
-        done = [t for t in self.turns if t.decode_s is not None]
-        out: dict = {
-            "turns": len(self.turns),
-            "completion_tokens": sum(t.completion_tokens for t in done),
-            "prompt_tokens": sum(t.prompt_tokens for t in done),
-            "tokens_estimated": any(t.estimated for t in done),
-            "ttft_s_median": _median([t.ttft for t in done if t.ttft is not None]),
-            "flushes_per_turn_median": _median([t.flushes for t in done]),
-        }
-        fresh = [(t.prompt_tokens - t.cached_tokens, t.ttft) for t in done if t.ttft and t.prompt_tokens]
-        out["prefill_tok_s"] = _rate(sum(n for n, _ in fresh), sum(s for _, s in fresh))
-        out["decode_tok_s"] = _rate(sum(max(t.completion_tokens - 1, 0) for t in done), sum(t.decode_s for t in done))
-        out["by_class"] = {
-            cls: {
-                "tokens": round(sum(t.chars[cls] * t.tokens_per_char for t in done)),
-                "seconds": round(sum(t.seconds[cls] for t in done), 3),
-                "decode_tok_s": _rate(
-                    sum(t.timed_chars[cls] * t.tokens_per_char for t in done), sum(t.seconds[cls] for t in done)
-                ),
-            }
-            for cls in CLASSES
-        }
-        return out
+        return summarize_turns(self.turns_json())
 
     def turns_json(self) -> list[dict]:
         return [
@@ -232,6 +217,55 @@ class Meter:
             | {"ttft": t.ttft, "decode_s": t.decode_s}
             for t in self.turns
         ]
+
+
+def is_streamed(t: dict) -> bool:
+    return (
+        t.get("decode_s") is not None
+        and t["decode_s"] > 0
+        and t.get("flushes", 0) >= MIN_FLUSHES
+        and t.get("max_flush_share", 0.0) <= MAX_FLUSH_SHARE
+    )
+
+
+def summarize_turns(turns: list[dict]) -> dict:
+    """A run's throughput from its saved turn records (`Meter.turns_json`), so saved runs can be re-summarised.
+
+    Decode and per-class rates use only streamed turns (`is_streamed`); a turn that came back in a burst has no
+    measurable decode time. `output_tok_s` (output tokens over the whole request,
+    prefill included) needs no streaming and is comparable across every provider."""
+    done = [t for t in turns if t.get("decode_s") is not None]
+    streamed = [t for t in done if is_streamed(t)]
+
+    def tpc(t: dict) -> float:
+        total = sum(t["chars"].values())
+        return t["completion_tokens"] / total if total else 0.0
+
+    fresh = [(t["prompt_tokens"] - t["cached_tokens"], t["ttft"]) for t in done if t["ttft"] and t["prompt_tokens"]]
+    return {
+        "turns": len(turns),
+        "streamed_turns": len(streamed),
+        "completion_tokens": sum(t["completion_tokens"] for t in done),
+        "prompt_tokens": sum(t["prompt_tokens"] for t in done),
+        "tokens_estimated": any(t["estimated"] for t in done),
+        "ttft_s_median": _median([t["ttft"] for t in done if t["ttft"] is not None]),
+        "flushes_per_turn_median": _median([t.get("flushes", 0) for t in done]),
+        "prefill_tok_s": _rate(sum(n for n, _ in fresh), sum(x for _, x in fresh)),
+        "output_tok_s": _rate(sum(t["completion_tokens"] for t in done), sum(t["t_end"] - t["t_start"] for t in done)),
+        "decode_tok_s": _rate(
+            sum(max(t["completion_tokens"] - 1, 0) for t in streamed), sum(t["decode_s"] for t in streamed)
+        ),
+        "by_class": {
+            cls: {
+                "tokens": round(sum(t["chars"][cls] * tpc(t) for t in done)),
+                "seconds": round(sum(t["seconds"][cls] for t in streamed), 3),
+                "decode_tok_s": _rate(
+                    sum(t["timed_chars"][cls] * tpc(t) for t in streamed), sum(t["seconds"][cls] for t in streamed)
+                ),
+            }
+            for cls in CLASSES
+        },
+    }
 
 
 def _rate(n: float, s: float) -> float | None:

@@ -6,8 +6,8 @@ import collections
 import json
 from pathlib import Path
 
+from .meter import MAX_FLUSH_SHARE, MIN_FLUSHES
 from .runner import REL_WARN, RunResult, summarise
-from .stats import mean_ci
 
 
 def load(files: list[str]) -> list[RunResult]:
@@ -58,23 +58,24 @@ def markdown(rows: list[RunResult]) -> str:
         "",
         "### Throughput, mean over runs (t 95%)",
         "",
-        "| model | provider | TTFT s | decode tok/s | prose tok/s | code tok/s | reasoning tok/s | flushes/turn |",
-        "|---|---|---|---|---|---|---|---|",
+        "| model | provider | TTFT s | output tok/s | decode tok/s | prose tok/s | code tok/s | reasoning tok/s "
+        + "| streamed requests |",
+        "|---|---|---|---|---|---|---|---|---|",
     ]
     for m, s in sums.items():
         a = s.get("all", {})
         providers = ", ".join(p for p, _ in collections.Counter(a.get("providers", {})).most_common(2)) or "–"
-        flushes = mean_ci(
-            [r.throughput.get("flushes_per_turn_median") for r in by_model[m] if not r.stop.startswith("error")]
-        )
         out.append(
-            f"| {m} | {providers} | {_mean(a.get('ttft_s'), 2)} | {_mean(a.get('decode_tok_s'))} | "
-            f"{_mean(a.get('prose_tok_s'))} | {_mean(a.get('code_tok_s'))} | "
-            f"{_mean(a.get('reasoning_tok_s'))} | {_mean(flushes, 0)} |"
+            f"| {m} | {providers} | {_mean(a.get('ttft_s'), 2)} | {_mean(a.get('output_tok_s'))} | "
+            f"{_mean(a.get('decode_tok_s'))} | {_mean(a.get('prose_tok_s'))} | {_mean(a.get('code_tok_s'))} | "
+            f"{_mean(a.get('reasoning_tok_s'))} | {a.get('streamed_turn_share', 0):.0%} |"
         )
     out += [
         "",
         f"`*`: the 95% interval is wider than ±{REL_WARN:.0%} of the mean; more seeds would narrow it. Runs that "
-        + "ended on an API error are excluded and counted under errors.",
+        + "ended on an API error are excluded and counted under errors. Output tok/s is output tokens over the whole "
+        + "request (prefill included) and needs no streaming; decode and per-class rates use only requests streamed "
+        + f"in at least {MIN_FLUSHES} arrivals with none holding over {MAX_FLUSH_SHARE:.0%} of the output "
+        + "(the streamed requests column).",
     ]
     return "\n".join(out) + "\n"

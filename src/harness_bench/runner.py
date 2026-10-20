@@ -9,7 +9,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from .harnesses.base import Harness
-from .meter import CLASSES, Meter
+from .meter import CLASSES, Meter, summarize_turns
 from .stats import mean_ci, wilson
 from .task import Task
 
@@ -74,6 +74,7 @@ def summarise(results: list[RunResult]) -> dict:
     groups: dict[str, list[RunResult]] = collections.defaultdict(list)
     errors: collections.Counter[str] = collections.Counter()
     for r in results:
+        r.throughput = summarize_turns(r.turns)  # recomputed, so saved runs follow the current rules
         for key in ("all", f"kind:{r.kind}", f"task:{r.task}"):
             if r.stop.startswith("error"):
                 errors[key] += 1
@@ -91,7 +92,11 @@ def summarise(results: list[RunResult]) -> dict:
             "pass_ci95": [round(lo, 3), round(hi, 3)],
             "score": mean_ci([r.score for r in rs]),
             "prefill_tok_s": mean_ci([r.throughput.get("prefill_tok_s") for r in rs]),
+            "output_tok_s": mean_ci([r.throughput.get("output_tok_s") for r in rs]),
             "decode_tok_s": mean_ci([r.throughput.get("decode_tok_s") for r in rs]),
+            "streamed_turn_share": round(
+                sum(r.throughput["streamed_turns"] for r in rs) / max(sum(r.throughput["turns"] for r in rs), 1), 3
+            ),
             "ttft_s": mean_ci([r.throughput.get("ttft_s_median") for r in rs]),
             "turns": mean_ci([r.throughput.get("turns") for r in rs]),
         }
