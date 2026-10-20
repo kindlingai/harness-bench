@@ -1,0 +1,36 @@
+[project]
+name = "harness-bench"
+version = "0.1.0"
+description = "Benchmark LLM serving stacks on real agentic tasks: seeded tool-calling tasks, pluggable harnesses, code/prose throughput"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+harness-bench = "harness_bench.cli:main"
+
+# Third-party harnesses and tasks register here; see CONTRIBUTING.md.
+[project.entry-points."harness_bench.harnesses"]
+openai-chat = "harness_bench.harnesses.openai_chat:OpenAIChatHarness"
+scripted = "harness_bench.harnesses.scripted:ScriptedHarness"
+
+[project.entry-points."harness_bench.tasks"]
+fix-bug = "harness_bench.tasks.fix_bug:FixBug"
+implement-function = "harness_bench.tasks.implement_function:ImplementFunction"
+log-report = "harness_bench.tasks.log_report:LogReport"
+release-notes = "harness_bench.tasks.release_notes:ReleaseNotes"
+
+[dependency-groups]
+dev = ["pytest>=8", "ruff>=0.6"]
+
+[build-system]
+requires = ["uv_build>=0.8.22,<0.9.0"]
+build-backend = "uv_build"
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
