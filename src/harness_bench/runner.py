@@ -72,15 +72,21 @@ def run_one(
 def summarise(results: list[RunResult]) -> dict:
     """Per task and per kind (code / prose): pass rate (Wilson 95%), score and throughput means (t 95%)."""
     groups: dict[str, list[RunResult]] = collections.defaultdict(list)
+    errors: collections.Counter[str] = collections.Counter()
     for r in results:
-        groups[f"task:{r.task}"].append(r)
-        groups[f"kind:{r.kind}"].append(r)
-        groups["all"].append(r)
+        for key in ("all", f"kind:{r.kind}", f"task:{r.task}"):
+            if r.stop.startswith("error"):
+                errors[key] += 1
+            else:
+                groups[key].append(r)
     out = {}
-    for key, rs in sorted(groups.items()):
+    for key in sorted(set(groups) | set(errors)):
+        rs = groups.get(key, [])
         p, lo, hi = wilson(sum(r.passed for r in rs), len(rs))
         g = {
             "runs": len(rs),
+            "errors_excluded": errors[key],
+            "providers": dict(collections.Counter(t["provider"] for r in rs for t in r.turns if t.get("provider"))),
             "pass_rate": round(p, 3),
             "pass_ci95": [round(lo, 3), round(hi, 3)],
             "score": mean_ci([r.score for r in rs]),

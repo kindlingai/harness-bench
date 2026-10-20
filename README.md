@@ -68,9 +68,16 @@ token (decode), and the server's token counts. Output is classed by what it is:
 | reasoning | the reasoning channel (`reasoning_content` / `reasoning`) |
 | tool | every other tool-call argument |
 
-Tokens are split across classes by character share. A class's decode rate is measured only over requests where it
-is at least 80% of the output ("pure" turns), so mixed requests do not blur the code and prose numbers. Prefill rate
-uses prompt tokens minus any the server reports as cached.
+Decode time is charged per arrival, not per request. Servers and routers send output in batches: pieces that arrive
+within 5 ms of each other form one flush. Each flush is charged the time since the previous flush, split across its
+characters by class. So a request that reasons, writes code and then explains itself splits its time correctly, and
+a provider that holds a tool call back and sends it in one burst is still charged the time it spent generating it.
+Characters convert to tokens with each request's own ratio from the server's usage counts. The first flush closes
+prefill; prefill rate uses prompt tokens minus any the server reports as cached.
+
+Per-class rates are only as fine as the stream: `flushes_per_turn_median` in each run says how coarse it was. A
+local vLLM or llama.cpp server streams every token; routed APIs send anywhere from a few dozen to a few hundred
+flushes per request.
 
 ## Layout
 

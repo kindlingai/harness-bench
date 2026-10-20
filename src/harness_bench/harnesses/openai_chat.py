@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 import urllib.error
 import urllib.request
 from typing import ClassVar
@@ -25,6 +26,7 @@ class OpenAIChatHarness(Harness):
         "max_tokens": "output cap per request (default 8192)",
         "extra_body": 'JSON merged into every request, e.g. \'{"chat_template_kwargs": {"thinking": false}}\'',
         "timeout": "seconds per request (default 600)",
+        "retries": "attempts per request on HTTP 429/5xx or a dropped connection (default 4)",
     }
 
     def __init__(self, **options: str):
@@ -36,6 +38,7 @@ class OpenAIChatHarness(Harness):
         self.max_tokens = int(o.get("max_tokens", 8192))
         self.extra = json.loads(o.get("extra_body", "{}"))
         self.timeout = float(o.get("timeout", 600))
+        self.retries = int(o.get("retries", 4))
         self.model = o.get("model") or self._first_model()
 
     def _request(self, path: str, body: dict | None = None):
@@ -56,7 +59,7 @@ class OpenAIChatHarness(Harness):
         tr = Transcript(messages=messages)
         for _ in range(max_turns):
             try:
-                msg = self._turn(messages, tools.schemas(), meter)
+                msg = self._turn_with_retries(messages, tools.schemas(), meter)
             except (urllib.error.URLError, TimeoutError, ValueError) as e:
                 tr.stop = f"error: {e}"
                 return tr
@@ -74,6 +77,23 @@ class OpenAIChatHarness(Harness):
         tr.stop = "max_turns"
         return tr
 
+    def _turn_with_retries(self, messages: list[dict], schemas: list[dict], meter: Meter) -> dict:
+        """A failed attempt's timings are dropped from the meter, so retries do not distort throughput."""
+        for attempt in range(self.retries):
+            n = len(meter.turns)
+            try:
+                return self._turn(messages, schemas, meter)
+            except urllib.error.HTTPError as e:
+                del meter.turns[n:]
+                if e.code != 429 and e.code < 500 or attempt == self.retries - 1:
+                    raise
+            except (urllib.error.URLError, TimeoutError, ConnectionError):
+                del meter.turns[n:]
+                if attempt == self.retries - 1:
+                    raise
+            time.sleep(2**attempt)
+        raise RuntimeError("unreachable")
+
     def _turn(self, messages: list[dict], schemas: list[dict], meter: Meter) -> dict:
         body = {
             "model": self.model,
@@ -87,7 +107,7 @@ class OpenAIChatHarness(Harness):
             **self.extra,
         }
         turn = meter.begin()
-        content, calls, usage = [], {}, None
+        content, calls, usage, provider = [], {}, None, ""
         with self._request("/chat/completions", body) as r:
             for raw in r:
                 line = raw.decode().strip()
@@ -98,12 +118,14 @@ class OpenAIChatHarness(Harness):
                     break
                 chunk = json.loads(data)
                 usage = chunk.get("usage") or usage
+                provider = chunk.get("provider") or provider
+                if chunk.get("error"):
+                    raise ValueError(f"stream error: {chunk['error']}")
                 for choice in chunk.get("choices") or []:
                     self._delta(choice.get("delta") or {}, turn, meter, content, calls)
-        for c in calls.values():
-            meter.tool_call(turn, c["function"]["name"], c["function"]["arguments"])
-        meter.content(turn, "".join(content))
-        meter.end(turn, usage)
+        for i, c in calls.items():
+            meter.tool_call(turn, i, c["function"]["name"], c["function"]["arguments"])
+        meter.end(turn, usage, provider)
         msg = {"role": "assistant", "content": "".join(content) or None}
         if calls:
             msg["tool_calls"] = [calls[i] for i in sorted(calls)]
@@ -113,18 +135,16 @@ class OpenAIChatHarness(Harness):
     def _delta(delta: dict, turn: Turn, meter: Meter, content: list[str], calls: dict) -> None:
         text = delta.get("content")
         if text:
-            meter.first_token(turn)
+            meter.content(turn, text)
             content.append(text)
         for key in REASONING_KEYS:
             if delta.get(key):
-                meter.first_token(turn)
-                meter.text(turn, "reasoning", delta[key])
+                meter.reasoning(turn, delta[key])
         for tc in delta.get("tool_calls") or []:
-            meter.first_token(turn)
-            c = calls.setdefault(
-                tc.get("index", 0), {"id": "", "type": "function", "function": {"name": "", "arguments": ""}}
-            )
+            index = tc.get("index", 0)
+            c = calls.setdefault(index, {"id": "", "type": "function", "function": {"name": "", "arguments": ""}})
             c["id"] = tc.get("id") or c["id"]
             fn = tc.get("function") or {}
             c["function"]["name"] += fn.get("name") or ""
             c["function"]["arguments"] += fn.get("arguments") or ""
+            meter.tool_args(turn, index, fn.get("arguments") or "")

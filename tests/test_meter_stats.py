@@ -14,34 +14,102 @@ class Clock:
 
 
 def test_split_content():
-    assert split_content("intro\n```py\nx = 1\n```\noutro") == {
-        "code": 6,
-        "prose": len("intro\n```py\nx = 1\n```\noutro") - 6,
-    }
+    text = "intro\n```py\nx = 1\n```\noutro"
+    assert split_content(text) == {"code": 6, "prose": len(text) - 6}
 
 
-def test_classes_and_rates():
+def test_mixed_turn_splits_time_by_piece():
+    """Reasoning for 1 s, then a code write for 2 s, in one request."""
     clock = Clock()
     m = Meter(clock=clock)
     t = m.begin()
     clock.t = 0.5
-    m.first_token(t)
-    m.tool_call(t, "write_file", json.dumps({"path": "a.py", "content": "x" * 900}))
-    clock.t = 2.5
-    m.end(t, {"prompt_tokens": 1000, "completion_tokens": 201})
+    m.reasoning(t, "r" * 10)  # first piece: closes prefill, charged no decode time
+    for _ in range(10):
+        clock.t += 0.1
+        m.reasoning(t, "r" * 10)
+    args = json.dumps({"path": "a.py", "content": "x" * 380})
+    m.tool_args(t, 0, "")
+    for i in range(0, len(args), 20):
+        clock.t += 2.0 / (len(args) / 20)
+        m.tool_args(t, 0, args[i : i + 20])
+    m.tool_call(t, 0, "write_file", args)
+    m.end(t, {"prompt_tokens": 1000, "completion_tokens": (110 + len(args)) // 2})
     s = m.summary()
+    assert math.isclose(s["by_class"]["reasoning"]["seconds"], 1.0, rel_tol=0.05)
+    assert math.isclose(s["by_class"]["code"]["seconds"], 2.0, rel_tol=0.05)
+    assert s["by_class"]["prose"]["decode_tok_s"] is None
     assert s["prefill_tok_s"] == 2000.0
-    assert s["decode_tok_s"] == 100.0
-    assert s["by_class"]["code"]["pure_turns"] == 1
-    assert s["by_class"]["code"]["decode_tok_s"] == 100.0
-    assert s["by_class"]["prose"]["pure_turns"] == 0
 
 
-def test_markdown_write_is_prose():
-    m = Meter(clock=Clock())
+def test_buffered_tool_call_is_charged_its_generation_time():
+    """A provider that sends the whole call after 3 s of silence: 3 s of tool time, not ~0."""
+    clock = Clock()
+    m = Meter(clock=clock)
     t = m.begin()
-    m.tool_call(t, "write_file", json.dumps({"path": "NOTES.md", "content": "words " * 50}))
-    assert t.share("prose") > 0.8
+    clock.t = 0.2
+    m.content(t, "Let me look.")
+    clock.t = 3.2
+    m.tool_args(t, 0, json.dumps({"path": "logs"}))
+    m.tool_call(t, 0, "list_files", json.dumps({"path": "logs"}))
+    m.end(t, {"prompt_tokens": 100, "completion_tokens": 10})
+    tool = m.summary()["by_class"]["tool"]
+    assert math.isclose(tool["seconds"], 3.0)
+    assert tool["decode_tok_s"] < 5
+
+
+def test_call_start_marker_does_not_swallow_the_gap():
+    """Reasoning, 2 s of silence, an empty call-start piece, then the arguments in a burst."""
+    clock = Clock()
+    m = Meter(clock=clock)
+    t = m.begin()
+    clock.t = 0.1
+    m.reasoning(t, "thinking")
+    clock.t = 2.1
+    m.tool_args(t, 0, "")
+    args = json.dumps({"path": "a.py", "content": "x" * 100})
+    for i in range(0, len(args), 10):
+        clock.t += 1e-6
+        m.tool_args(t, 0, args[i : i + 10])
+    m.tool_call(t, 0, "write_file", args)
+    m.end(t, {"prompt_tokens": 10, "completion_tokens": 40})
+    assert math.isclose(m.summary()["by_class"]["code"]["seconds"], 2.0, rel_tol=0.01)
+
+
+def test_one_flush_splits_its_time_by_characters():
+    """The end of the reasoning and a whole tool call arrive together after a 2 s gap."""
+    clock = Clock()
+    m = Meter(clock=clock)
+    t = m.begin()
+    clock.t = 1.0
+    m.reasoning(t, "r" * 50)
+    clock.t = 3.0
+    m.reasoning(t, "r" * 100)
+    args = json.dumps({"path": "a.py", "content": "x" * 280})
+    m.tool_args(t, 0, args)
+    m.tool_call(t, 0, "write_file", args)
+    m.end(t, {"prompt_tokens": 10, "completion_tokens": 100})
+    by = m.summary()["by_class"]
+    assert t.flushes == 2
+    assert math.isclose(by["reasoning"]["seconds"], 2.0 * 100 / (100 + len(args)), abs_tol=1e-3)
+    assert math.isclose(by["reasoning"]["seconds"] + by["code"]["seconds"], 2.0, abs_tol=1e-3)
+
+
+def test_markdown_write_is_prose_and_fences_are_code():
+    clock = Clock()
+    m = Meter(clock=clock)
+    t = m.begin()
+    for piece in ["Here is the fix:\n", "```py\n", "x = 1\n", "```\n", "Done."]:
+        clock.t += 0.1
+        m.content(t, piece)
+    args = json.dumps({"path": "NOTES.md", "content": "words " * 20})
+    clock.t += 0.1
+    m.tool_args(t, 0, args)
+    m.tool_call(t, 0, "write_file", args)
+    m.end(t, None)
+    assert t.chars["code"] == len("x = 1\n")
+    assert t.chars["prose"] > len("words " * 20)
+    assert t.estimated
 
 
 def test_wilson_bounds():
@@ -53,7 +121,6 @@ def test_wilson_bounds():
 
 def test_mean_ci():
     r = mean_ci([10, 12, 11, 13, 9])
-    assert (
-        r["mean"] == 11 and r["n"] == 5 and math.isclose(r["ci95"], 2.776 * math.sqrt(2.5) / math.sqrt(5), rel_tol=1e-3)
-    )
+    assert r["mean"] == 11 and r["n"] == 5
+    assert math.isclose(r["ci95"], 2.776 * math.sqrt(2.5) / math.sqrt(5), rel_tol=1e-3)
     assert mean_ci([None])["n"] == 0

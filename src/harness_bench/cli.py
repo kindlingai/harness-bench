@@ -6,9 +6,10 @@ import argparse
 import contextlib
 import json
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from . import registry
+from . import registry, report
 from .runner import result_dict, run_one, summarise
 
 
@@ -61,9 +62,11 @@ def cmd_run(args) -> None:
 
 
 def _run_all(names, tasks, seeds, harness, args, keep, results, out) -> None:
-    for name in names:
-        for seed in seeds:
-            r = run_one(tasks[name], seed, harness, max_turns=args.max_turns, keep=keep)
+    jobs = [(name, seed) for name in names for seed in seeds]
+    with ThreadPoolExecutor(max_workers=args.jobs) as ex:
+        futures = [ex.submit(run_one, tasks[n], s, harness, max_turns=args.max_turns, keep=keep) for n, s in jobs]
+        for (name, seed), fut in zip(jobs, futures):
+            r = fut.result()
             results.append(r)
             t = r.throughput
             print(
@@ -78,12 +81,11 @@ def _run_all(names, tasks, seeds, harness, args, keep, results, out) -> None:
 
 
 def cmd_summarise(args) -> None:
-    from .runner import RunResult
+    print(json.dumps(summarise(report.load(args.files)), indent=2))
 
-    rows = []
-    for f in args.files:
-        rows += [RunResult(**json.loads(line)) for line in Path(f).read_text().splitlines() if line.strip()]
-    print(json.dumps(summarise(rows), indent=2))
+
+def cmd_report(args) -> None:
+    print(report.markdown(report.load(args.files)), end="")
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -96,6 +98,9 @@ def main(argv: list[str] | None = None) -> None:
     r.add_argument("--tasks", default="all", help="comma list or 'all'")
     r.add_argument("--seeds", default="20", help="N (0..N-1), A-B, or a comma list; default 20")
     r.add_argument("--max-turns", type=int, default=30)
+    r.add_argument(
+        "--jobs", type=int, default=1, help="runs in parallel (default 1; more changes what a local server measures)"
+    )
     r.add_argument("--out", help="append one JSON line per run")
     r.add_argument("--summary", help="write the summary JSON here too")
     r.add_argument("--keep", help="copy each final workspace under this directory")
@@ -103,6 +108,9 @@ def main(argv: list[str] | None = None) -> None:
     s = sub.add_parser("summarise", help="summarise JSONL files written by run --out")
     s.add_argument("files", nargs="+")
     s.set_defaults(fn=cmd_summarise)
+    rp = sub.add_parser("report", help="markdown comparison by model of JSONL files written by run --out")
+    rp.add_argument("files", nargs="+")
+    rp.set_defaults(fn=cmd_report)
     args = ap.parse_args(argv)
     args.fn(args)
 

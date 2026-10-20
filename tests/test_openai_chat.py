@@ -69,6 +69,6 @@ def test_tool_loop_solves_release_notes():
     assert r.passed, r.checks
     assert r.stop == "finish" and h.model == "fake-model"
     assert r.throughput["turns"] == 3
-    assert r.throughput["by_class"]["prose"]["pure_turns"] == 1
+    assert r.throughput["by_class"]["prose"]["tokens"] > 0
     assert requests[1]["messages"][-1]["role"] == "tool"
     assert {t["function"]["name"] for t in requests[0]["tools"]} >= {"read_file", "write_file", "finish"}
