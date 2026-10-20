@@ -96,7 +96,7 @@ def main(argv: list[str] | None = None) -> None:
     r.add_argument("--harness", default="openai-chat")
     r.add_argument("-o", "--option", action="append", default=[], help="harness option key=value (repeatable)")
     r.add_argument("--tasks", default="all", help="comma list or 'all'")
-    r.add_argument("--seeds", default="20", help="N (0..N-1), A-B, or a comma list; default 20")
+    r.add_argument("--seeds", default="2", help="N (0..N-1), A-B, or a comma list; default 2")
     r.add_argument("--max-turns", type=int, default=30)
     r.add_argument(
         "--jobs", type=int, default=1, help="runs in parallel (default 1; more changes what a local server measures)"

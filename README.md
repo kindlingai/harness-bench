@@ -25,10 +25,11 @@ uv run harness-bench run --harness scripted --seeds 5
 # any OpenAI-compatible server (vLLM, SGLang, llama.cpp, OpenAI, OpenRouter, ...)
 uv run harness-bench run --harness openai-chat \
   -o base_url=http://localhost:8000/v1 -o model=my-model \
-  --seeds 20 --out runs.jsonl --summary summary.json
+  --out runs.jsonl --summary summary.json
 ```
 
-`--seeds 20` runs seeds 0-19 of every task (also `5-9` or `1,4,9`). `--out` appends one JSON line per run with the
+By default every task runs seeds 0 and 1, a quick look; widen it for tighter intervals: `--seeds 20` runs
+seeds 0-19 (also `5-9` or `1,4,9`). `--out` appends one JSON line per run with the
 verdict, every request's timings and token split; `harness-bench summarise runs.jsonl ...` rebuilds the summary from
 any number of such files.
 
@@ -36,7 +37,7 @@ OpenRouter, for example:
 
 ```bash
 OPENAI_API_KEY=$OPENROUTER_API_KEY uv run harness-bench run \
-  -o base_url=https://openrouter.ai/api/v1 -o model=qwen/qwen3-coder --seeds 20
+  -o base_url=https://openrouter.ai/api/v1 -o model=qwen/qwen3-coder
 ```
 
 > Tasks run model-written code (the test suites) on your machine. Run untrusted models in a container or VM.
