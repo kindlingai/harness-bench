@@ -33,6 +33,7 @@ class RunResult:
     tool_calls: int
     throughput: dict
     turns: list[dict]
+    subagents: int = 0
 
 
 def run_one(
@@ -66,6 +67,7 @@ def run_one(
         tool_calls=len(setup.tools.calls),
         throughput=meter.summary(),
         turns=meter.turns_json(),
+        subagents=len(setup.workers),
     )
 
 

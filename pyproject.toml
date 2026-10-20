@@ -16,6 +16,7 @@ openai-chat = "harness_bench.harnesses.openai_chat:OpenAIChatHarness"
 scripted = "harness_bench.harnesses.scripted:ScriptedHarness"
 
 [project.entry-points."harness_bench.tasks"]
+audit-services = "harness_bench.tasks.audit_services:AuditServices"
 fix-bug = "harness_bench.tasks.fix_bug:FixBug"
 implement-function = "harness_bench.tasks.implement_function:ImplementFunction"
 log-report = "harness_bench.tasks.log_report:LogReport"

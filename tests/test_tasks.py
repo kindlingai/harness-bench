@@ -51,3 +51,20 @@ def test_tools_stay_in_workspace(tmp_path):
     assert setup.tools.call("read_file", {"path": "../../etc/passwd"}).startswith("error:")
     assert setup.tools.call("nope", {}).startswith("error: unknown tool")
     assert setup.tools.call("read_file", "{not json").startswith("error: bad arguments")
+
+
+def test_audit_needs_delegation(tmp_path):
+    """The lead cannot read; a worker reads at most two files."""
+    task = TASKS["audit-services"](0)
+    setup = task.setup(tmp_path)
+    assert "read_file" not in setup.tools.tools and "spawn_agent" in setup.tools.tools
+    worker = setup.new_worker()
+    files = sorted(p.name for p in (tmp_path / "services").iterdir())
+    assert not worker.call("read_file", {"path": f"services/{files[0]}"}).startswith("error")
+    worker.call("read_file", {"path": f"services/{files[1]}"})
+    assert worker.call("read_file", {"path": f"services/{files[2]}"}).startswith("error: this agent's read budget")
+
+
+def test_audit_reference_delegates():
+    r = run_one(TASKS["audit-services"], 0, ScriptedHarness(), max_turns=1)
+    assert r.checks["delegated"] and r.passed

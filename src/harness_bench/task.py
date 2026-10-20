@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import random
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import ClassVar, Literal
@@ -20,6 +21,10 @@ SYSTEM_PROMPT = (
     "You are working in a project directory through tools. Inspect files before changing them, make the change "
     "the user asks for, check your work where a tool lets you, and call finish when you are done."
 )
+WORKER_PROMPT = (
+    "You are a subagent. Another agent gave you one self-contained task. Do it with your tools, then call finish "
+    "with a complete, specific report of what you found: the other agent sees only that message."
+)
 
 
 @dataclass
@@ -29,6 +34,10 @@ class Setup:
     prompt: str
     tools: ToolBox
     system: str = SYSTEM_PROMPT
+    # Set for tasks that need delegation: makes a fresh tool box for each subagent the lead spawns.
+    new_worker: Callable[[], ToolBox] | None = None
+    worker_system: str = WORKER_PROMPT
+    workers: list[ToolBox] = field(default_factory=list)
 
 
 @dataclass
@@ -59,7 +68,24 @@ class Task(ABC):
         """Write the task's files into `workspace` (an empty directory) and return its prompt and tools."""
         workspace.mkdir(parents=True, exist_ok=True)
         prompt = self.build(workspace)
-        return Setup(prompt=prompt, tools=standard_tools(workspace, test_command=self.test_command()))
+        worker = self.worker_tools(workspace)
+        return Setup(
+            prompt=prompt,
+            tools=self.lead_tools(workspace),
+            new_worker=(lambda: self.worker_tools(workspace)) if worker is not None else None,
+        )
+
+    def lead_tools(self, workspace: Path) -> ToolBox:
+        """The tools the model starts with. Override to restrict them (a delegation task removes reading)."""
+        return standard_tools(workspace, test_command=self.test_command())
+
+    def worker_tools(self, workspace: Path) -> ToolBox | None:
+        """A subagent's tools, for tasks that need delegation; None (the default) means no subagents."""
+        return None
+
+    def reference_worker(self, prompt: str, tools: ToolBox) -> None:
+        """A subagent's reference behaviour for the scripted harness; delegation tasks override it."""
+        raise NotImplementedError
 
     def test_command(self) -> list[str] | None:
         """argv of the workspace's test suite, if the task has one (adds the `run_tests` tool)."""

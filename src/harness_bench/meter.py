@@ -98,6 +98,7 @@ class Turn:
     completion_tokens: int = 0
     estimated: bool = False  # True when the server sent no usage and tokens are chars / 4
     provider: str = ""  # the upstream that served it, when a router reports one
+    agent: str = "lead"  # "lead", or "sub<N>" for the Nth subagent
     flushes: int = 0  # separate arrivals; few flushes means coarse per-class timing
     max_flush_share: float = 1.0  # the largest flush's share of the output; near 1 means it came in one burst
     chars: dict[str, float] = field(default_factory=_empty)  # every streamed character, by class
@@ -132,8 +133,8 @@ class Meter:
         self.clock = clock
         self.turns: list[Turn] = []
 
-    def begin(self) -> Turn:
-        t = Turn(t_start=self.clock())
+    def begin(self, agent: str = "lead") -> Turn:
+        t = Turn(t_start=self.clock(), agent=agent)
         self.turns.append(t)
         return t
 

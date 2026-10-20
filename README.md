@@ -45,6 +45,7 @@ OPENAI_API_KEY=$OPENROUTER_API_KEY uv run harness-bench run \
 
 | task | kind | what the model does | how it is checked |
 |---|---|---|---|
+| `audit-services` | prose | audit six service configs it cannot read itself, by delegating to subagents | every service's planted misconfiguration named in the report; at least 3 subagents spawned |
 | `fix-bug` | code | find one seeded bug in a utility module and fix it | the unittest suite passes, the tests are unedited, the model ran them |
 | `implement-function` | code | implement a function from its docstring and three examples | 3 visible + 40 seeded hidden cases; score is the fraction passed |
 | `log-report` | prose | read three service logs, write an incident handoff | at least 120 words of prose stating four exact facts (count, service, timestamp, code) |
@@ -53,7 +54,10 @@ OPENAI_API_KEY=$OPENROUTER_API_KEY uv run harness-bench run \
 ## Tools
 
 Every task offers the same tools, confined to its workspace: `list_files`, `read_file`, `write_file`, `search`,
-`finish`, and `run_tests` where the task has a test suite. A bad call (unknown file, path outside the workspace,
+`finish`, and `run_tests` where the task has a test suite. A delegation task (`audit-services`) restricts them: the
+lead agent gets `spawn_agent` instead of any read tool, and each subagent gets a fresh context, its own tools and a
+budget of two file reads, so finishing the task alone is not possible. Subagent requests are metered like the lead's
+and tagged with the agent that made them. A bad call (unknown file, path outside the workspace,
 malformed JSON) returns an error message to the model instead of failing the run.
 
 ## What the throughput numbers mean

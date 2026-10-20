@@ -51,6 +51,9 @@ class ToolBox:
     finished: bool = False
     final_message: str = ""
     test_command: list[str] | None = None
+    reads_left: int | None = None  # a per-agent read budget, when the task sets one
+    # Runs one subagent on a task description and returns its report; the harness binds it (spawn_agent tool).
+    spawner: Callable[[str], str] | None = None
 
     def path(self, rel: str) -> Path:
         """Resolve `rel` inside the workspace; raises ValueError for a path that escapes it."""
@@ -91,9 +94,17 @@ def _obj(props: dict, required: list[str]) -> dict:
     return {"type": "object", "properties": props, "required": required}
 
 
-def standard_tools(root: Path, *, test_command: list[str] | None = None) -> ToolBox:
-    """The shared tool set. `test_command`, when given, adds `run_tests` (argv run in the workspace)."""
-    box = ToolBox(root.resolve(), test_command=test_command)
+def standard_tools(
+    root: Path,
+    *,
+    test_command: list[str] | None = None,
+    only: tuple[str, ...] | None = None,
+    read_budget: int | None = None,
+    spawn: bool = False,
+) -> ToolBox:
+    """The shared tool set. `test_command` adds `run_tests` (argv run in the workspace); `only` keeps just the named
+    tools; `read_budget` caps `read_file` calls; `spawn` adds `spawn_agent`, which needs `box.spawner` bound."""
+    box = ToolBox(root.resolve(), test_command=test_command, reads_left=read_budget)
 
     def list_files(path: str = ".") -> str:
         base = box.path(path)
@@ -101,6 +112,10 @@ def standard_tools(root: Path, *, test_command: list[str] | None = None) -> Tool
         return "\n".join(files) or "(no files)"
 
     def read_file(path: str) -> str:
+        if box.reads_left is not None:
+            if box.reads_left <= 0:
+                return "error: this agent's read budget is used up; finish and report what you found"
+            box.reads_left -= 1
         return box.path(path).read_text()
 
     def write_file(path: str, content: str) -> str:
@@ -129,6 +144,11 @@ def standard_tools(root: Path, *, test_command: list[str] | None = None) -> Tool
         box.finished, box.final_message = True, message
         return "finished"
 
+    def spawn_agent(task: str) -> str:
+        if box.spawner is None:
+            return "error: this harness cannot run subagents"
+        return box.spawner(task)
+
     path_arg = {"type": "string", "description": "path relative to the workspace root"}
     for tool in [
         Tool(
@@ -156,8 +176,16 @@ def standard_tools(root: Path, *, test_command: list[str] | None = None) -> Tool
             _obj({"message": {"type": "string"}}, []),
             finish,
         ),
+        Tool(
+            "spawn_agent",
+            "Start a subagent with its own fresh context and tools on a self-contained task. Describe the task fully; "
+            + "the subagent sees nothing of this conversation. Returns the subagent's final report.",
+            _obj({"task": {"type": "string", "description": "complete instructions for the subagent"}}, ["task"]),
+            spawn_agent,
+        ),
     ]:
-        box.tools[tool.name] = tool
+        if (only is None or tool.name in only) and (spawn or tool.name != "spawn_agent"):
+            box.tools[tool.name] = tool
     if test_command:
         box.tools["run_tests"] = Tool(
             "run_tests", "Run the project's test suite and return its output.", _obj({}, []), run_tests

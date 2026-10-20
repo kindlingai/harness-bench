@@ -31,6 +31,10 @@ class MyTask(Task):
         ...
 ```
 
+A task that needs delegation overrides `lead_tools()` (for example `standard_tools(ws, only=(...), spawn=True)` to
+drop reading and add `spawn_agent`) and `worker_tools()` (each subagent's tools, optionally with a `read_budget`), plus
+`reference_worker()` for the scripted harness. See `tasks/audit_services.py`.
+
 Override `test_command()` to return an argv (for example `python_unittest()`) and the task gains a `run_tests`
 tool. Register it in `pyproject.toml`:
 
@@ -68,6 +72,9 @@ class MyHarness(Harness):
         # setup.tools.schemas(): OpenAI-style function definitions
         # setup.tools.call(name, arguments) -> str: execute one call
         # setup.tools.finished: True once the model called finish
+        # setup.new_worker: set for delegation tasks; bind setup.tools.spawner to a function that takes the
+        #   subagent's task text, runs it with setup.new_worker() and setup.worker_system, and returns its report
+        #   (append each worker box to setup.workers and tag its turns with meter.begin(f"sub{n}"))
         for _ in range(max_turns):
             turn = meter.begin()
             ...  # send the request, stream the reply

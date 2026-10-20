@@ -54,12 +54,26 @@ class OpenAIChatHarness(Harness):
             return json.load(r)["data"][0]["id"]
 
     def run(self, task: Task, setup: Setup, meter: Meter, *, max_turns: int) -> Transcript:
-        tools = setup.tools
-        messages = [{"role": "system", "content": setup.system}, {"role": "user", "content": setup.prompt}]
+        if setup.new_worker is not None:
+            setup.tools.spawner = lambda prompt: self._subagent(setup, meter, prompt, max_turns)
+        return self._converse(setup.system, setup.prompt, setup.tools, meter, max_turns, "lead")
+
+    def _subagent(self, setup: Setup, meter: Meter, prompt: str, max_turns: int) -> str:
+        """Run one subagent to completion in its own conversation; its report is the lead's tool result."""
+        box = setup.new_worker()
+        setup.workers.append(box)
+        tr = self._converse(setup.worker_system, prompt, box, meter, max_turns, f"sub{len(setup.workers)}")
+        if box.final_message:
+            return box.final_message
+        last = next((m.get("content") for m in reversed(tr.messages) if m["role"] == "assistant"), None)
+        return last or f"error: the subagent stopped without a report ({tr.stop})"
+
+    def _converse(self, system: str, prompt: str, tools, meter: Meter, max_turns: int, agent: str) -> Transcript:
+        messages = [{"role": "system", "content": system}, {"role": "user", "content": prompt}]
         tr = Transcript(messages=messages)
         for _ in range(max_turns):
             try:
-                msg = self._turn_with_retries(messages, tools.schemas(), meter)
+                msg = self._turn_with_retries(messages, tools.schemas(), meter, agent)
             except (urllib.error.URLError, TimeoutError, ValueError) as e:
                 tr.stop = f"error: {e}"
                 return tr
@@ -77,12 +91,12 @@ class OpenAIChatHarness(Harness):
         tr.stop = "max_turns"
         return tr
 
-    def _turn_with_retries(self, messages: list[dict], schemas: list[dict], meter: Meter) -> dict:
+    def _turn_with_retries(self, messages: list[dict], schemas: list[dict], meter: Meter, agent: str) -> dict:
         """A failed attempt's timings are dropped from the meter, so retries do not distort throughput."""
         for attempt in range(self.retries):
             n = len(meter.turns)
             try:
-                return self._turn(messages, schemas, meter)
+                return self._turn(messages, schemas, meter, agent)
             except urllib.error.HTTPError as e:
                 del meter.turns[n:]
                 if e.code != 429 and e.code < 500 or attempt == self.retries - 1:
@@ -94,7 +108,7 @@ class OpenAIChatHarness(Harness):
             time.sleep(2**attempt)
         raise RuntimeError("unreachable")
 
-    def _turn(self, messages: list[dict], schemas: list[dict], meter: Meter) -> dict:
+    def _turn(self, messages: list[dict], schemas: list[dict], meter: Meter, agent: str) -> dict:
         body = {
             "model": self.model,
             "messages": messages,
@@ -106,7 +120,7 @@ class OpenAIChatHarness(Harness):
             "stream_options": {"include_usage": True},
             **self.extra,
         }
-        turn = meter.begin()
+        turn = meter.begin(agent)
         content, calls, usage, provider = [], {}, None, ""
         with self._request("/chat/completions", body) as r:
             for raw in r:
